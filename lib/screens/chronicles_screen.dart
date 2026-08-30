@@ -26,6 +26,7 @@ class _ChroniclesScreenState extends State<ChroniclesScreen> {
 
   Future<void> _load() async {
     final list = await _storage.loadChronicles();
+    if (!mounted) return;
     setState(() {
       _items = list;
       _loading = false;
@@ -34,86 +35,88 @@ class _ChroniclesScreenState extends State<ChroniclesScreen> {
 
   Future<void> _save() async {
     await _storage.saveChronicles(_items);
+    if (!mounted) return;
     setState(() {});
   }
 
   Future<void> _edit({Chronicle? existing}) async {
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    var role = existing?.role ?? ChronicleRole.player;
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setD) {
-            return AlertDialog(
-              title: Text(existing == null ? 'Новая хроника' : 'Хроника'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: nameCtrl,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Название',
-                      border: OutlineInputBorder(),
-                    ),
+    final isPlayer = existing?.role == ChronicleRole.player;
+    try {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: Text(existing == null ? 'Новая хроника' : 'Хроника'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  autofocus: existing == null || !isPlayer,
+                  readOnly: isPlayer,
+                  decoration: const InputDecoration(
+                    labelText: 'Название',
+                    border: OutlineInputBorder(),
                   ),
-                  const SizedBox(height: 16),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'Ваша роль в этой хронике',
-                      style: TextStyle(color: Colors.grey.shade400),
-                    ),
-                  ),
-                  RadioListTile<ChronicleRole>(
-                    title: const Text('Игрок'),
-                    value: ChronicleRole.player,
-                    groupValue: role,
-                    onChanged: (v) => setD(() => role = v!),
-                  ),
-                  RadioListTile<ChronicleRole>(
-                    title: const Text('Рассказчик'),
-                    value: ChronicleRole.storyteller,
-                    groupValue: role,
-                    onChanged: (v) => setD(() => role = v!),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('Отмена'),
                 ),
+                const SizedBox(height: 12),
+                Text(
+                  existing == null
+                      ? 'Вы будете рассказчиком этой хроники. '
+                          'Игроки присоединяются по ссылке с Google Диска.'
+                      : (isPlayer
+                          ? 'Вы — игрок. Роль здесь не меняется.'
+                          : 'Вы — рассказчик.'),
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Отмена'),
+              ),
+              if (!isPlayer)
                 ElevatedButton(
                   onPressed: () => Navigator.pop(ctx, true),
                   child: const Text('Сохранить'),
                 ),
-              ],
-            );
-          },
+            ],
+          );
+        },
+      );
+      if (ok != true) return;
+      final name = nameCtrl.text.trim().isEmpty
+          ? 'Без названия'
+          : nameCtrl.text.trim();
+      if (!mounted) return;
+      if (existing == null) {
+        _items.add(
+          Chronicle(
+            id: const Uuid().v4(),
+            name: name,
+            role: ChronicleRole.storyteller,
+          ),
         );
-      },
-    );
-
-    if (ok != true) return;
-    final name = nameCtrl.text.trim().isEmpty
-        ? 'Без названия'
-        : nameCtrl.text.trim();
-    if (existing == null) {
-      _items.add(Chronicle(id: const Uuid().v4(), name: name, role: role));
-    } else {
-      existing.name = name;
-      existing.role = role;
+      } else if (existing.role == ChronicleRole.storyteller) {
+        existing.name = name;
+      }
+      await _save();
+    } finally {
+      nameCtrl.dispose();
     }
-    await _save();
   }
 
   Future<void> _export(Chronicle c) async {
     final chars = await _storage.loadCharacters();
     final mine = chars.where((ch) => ch.chronicleId == c.id).toList();
-    final json = SyncPayload.wrapChronicle(c, mine);
+    final json = SyncPayload.wrapChronicle(
+      c,
+      mine,
+      includePrivateNotes: c.role == ChronicleRole.storyteller,
+    );
     await Clipboard.setData(ClipboardData(text: json));
     if (!mounted) return;
     await showDialog<void>(

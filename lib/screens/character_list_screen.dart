@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 import 'package:vtm_helper/models/character.dart';
 import 'package:vtm_helper/models/chronicle.dart';
 import 'package:vtm_helper/services/storage_service.dart';
+import 'package:vtm_helper/services/drive_sync_service.dart';
 import 'package:vtm_helper/screens/character_sheet_screen.dart';
 import 'package:vtm_helper/screens/chronicles_screen.dart';
 import 'package:vtm_helper/screens/google_sync_screen.dart';
@@ -32,6 +33,7 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
   Future<void> _reload() async {
     final chars = await _storage.loadCharacters();
     final chrons = await _storage.loadChronicles();
+    if (!mounted) return;
     setState(() {
       _characters = chars;
       _chronicles = chrons;
@@ -118,8 +120,32 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
       },
     );
     if (chosen == null) return;
+    final previous = _chronicleOf(character);
     character.chronicleId = chosen.isEmpty ? null : chosen;
+    character.updatedAt = DateTime.now().millisecondsSinceEpoch;
     await _storage.updateCharacter(character);
+    Chronicle? next;
+    if (chosen.isNotEmpty) {
+      for (final c in _chronicles) {
+        if (c.id == chosen) {
+          next = c;
+          break;
+        }
+      }
+    }
+    try {
+      await DriveSyncService.instance.relocateCharacter(
+        character: character,
+        from: previous,
+        to: next,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Локально перенесено, Диск: $e')),
+        );
+      }
+    }
     await _reload();
   }
 
@@ -155,7 +181,11 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
   }
 
   Future<void> _exportCharacter(Character character) async {
-    final json = SyncPayload.wrapCharacter(character);
+    final json = SyncPayload.wrapCharacter(
+      character,
+      includePrivateNotes:
+          _chronicleOf(character)?.role == ChronicleRole.storyteller,
+    );
     await Clipboard.setData(ClipboardData(text: json));
     if (!mounted) return;
     await showDialog<void>(
@@ -181,36 +211,37 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
 
   Future<void> _importFromClipboardOrText() async {
     final controller = TextEditingController();
-    final clip = await Clipboard.getData('text/plain');
-    if (clip?.text != null && clip!.text!.trim().isNotEmpty) {
-      controller.text = clip.text!;
-    }
-    final raw = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Импорт JSON'),
-        content: TextField(
-          controller: controller,
-          maxLines: 12,
-          decoration: const InputDecoration(
-            hintText: 'Вставьте JSON персонажа или хроники',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Отмена'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, controller.text),
-            child: const Text('Импорт'),
-          ),
-        ],
-      ),
-    );
-    if (raw == null || raw.trim().isEmpty) return;
     try {
+      final clip = await Clipboard.getData('text/plain');
+      if (clip?.text != null && clip!.text!.trim().isNotEmpty) {
+        controller.text = clip.text!;
+      }
+      if (!mounted) return;
+      final raw = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Импорт JSON'),
+          content: TextField(
+            controller: controller,
+            maxLines: 12,
+            decoration: const InputDecoration(
+              hintText: 'Вставьте JSON персонажа или хроники',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Отмена'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, controller.text),
+              child: const Text('Импорт'),
+            ),
+          ],
+        ),
+      );
+      if (raw == null || raw.trim().isEmpty) return;
       final parsed = SyncPayload.parse(raw);
       if (parsed.isCharacter) {
         await _importOneCharacter(parsed.character!);
@@ -222,6 +253,8 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Не удалось импортировать: $e')),
       );
+    } finally {
+      controller.dispose();
     }
   }
 
@@ -275,6 +308,55 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
     Chronicle chronicle,
     List<Character> characters,
   ) async {
+    final conflicts = characters
+        .where((ch) => _characters.any((c) => c.id == ch.id))
+        .toList();
+    var replaceAll = true;
+    if (conflicts.isNotEmpty) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Хроника «${chronicle.name}»'),
+          content: Text(
+            'Уже есть ${conflicts.length} из ${characters.length} персонажей. '
+            'Замена сотрёт локальные здоровье, кровь и заметки.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'skip'),
+              child: const Text('Оставить локальных'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'ask'),
+              child: const Text('По одному'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, 'replace'),
+              child: const Text('Заменить всех'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null) return;
+      if (choice == 'ask') {
+        for (final ch in characters) {
+          ch.chronicleId = chronicle.id;
+          await _importOneCharacter(ch);
+        }
+        final list = await _storage.loadChronicles();
+        final idx = list.indexWhere((c) => c.id == chronicle.id);
+        if (idx == -1) {
+          list.add(chronicle);
+        } else {
+          list[idx] = chronicle;
+        }
+        await _storage.saveChronicles(list);
+        await _reload();
+        return;
+      }
+      replaceAll = choice == 'replace';
+    }
+
     final list = await _storage.loadChronicles();
     final idx = list.indexWhere((c) => c.id == chronicle.id);
     if (idx == -1) {
@@ -287,7 +369,7 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
       ch.chronicleId = chronicle.id;
       final exists = _characters.any((c) => c.id == ch.id);
       if (exists) {
-        await _storage.updateCharacter(ch);
+        if (replaceAll) await _storage.updateCharacter(ch);
       } else {
         await _storage.addCharacter(ch);
       }

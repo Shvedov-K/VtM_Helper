@@ -75,7 +75,9 @@ class _AttributeRowState extends State<AttributeRow> {
     final controller = TextEditingController(text: widget.specialty ?? '');
     final suggestions = widget.specialtySuggestions;
 
-    final result = await showDialog<String?>(
+    String? result;
+    try {
+      result = await showDialog<String?>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
@@ -150,8 +152,10 @@ class _AttributeRowState extends State<AttributeRow> {
         );
       },
     );
+    } finally {
+      controller.dispose();
+    }
 
-    // null = отмена, '' = очистить, иначе текст
     if (result == null) return;
     if (result.isEmpty) {
       widget.onSpecialtyChanged!(null);

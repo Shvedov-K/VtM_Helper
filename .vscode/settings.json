@@ -1,0 +1,7 @@
+{
+  "dart.flutterRunAdditionalArgs": [
+    "--dart-define-from-file=dart_defines.json",
+    "--web-hostname=localhost",
+    "--web-port=7357"
+  ]
+}

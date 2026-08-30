@@ -3,6 +3,8 @@ import 'package:vtm_helper/models/trait_ids.dart';
 enum InjuryLevel { empty, bashing, lethal }
 
 class Character {
+  static const healthBoxCount = 7;
+
   String id;
   String name;
   String player;
@@ -137,10 +139,10 @@ class Character {
        flaws = flaws ?? [],
        virtues = virtues ?? {'Совесть': 0, 'Самоконтроль': 0, 'Храбрость': 0},
        updatedAt = updatedAt ?? DateTime.now().millisecondsSinceEpoch,
-       healthLevels = healthLevels ?? List.filled(7, InjuryLevel.empty);
+       healthLevels =
+           healthLevels ?? List.filled(healthBoxCount, InjuryLevel.empty);
 
-  // Сериализация
-  Map<String, dynamic> toJson() {
+  Map<String, dynamic> toJson({bool includePrivateNotes = true}) {
     return {
       'id': id,
       'name': name,
@@ -173,7 +175,8 @@ class Character {
       'experience': experience,
       'sheetThemeId': sheetThemeId,
       'storytellerNotes': storytellerNotes,
-      'storytellerPrivateNotes': storytellerPrivateNotes,
+      if (includePrivateNotes)
+        'storytellerPrivateNotes': storytellerPrivateNotes,
       'chronicleId': chronicleId,
       'drivePlayerName': drivePlayerName,
       'updatedAt': updatedAt,
@@ -221,22 +224,10 @@ class Character {
       customAbilityDescriptions: TraitIds.decodeStrMap(
         Map<String, dynamic>.from(json['customAbilityDescriptions'] ?? {}),
       ),
-      disciplines: (json['disciplines'] as List? ?? [])
-          .map((d) => ExpandableItem.fromJson(d))
-          .toList()
-          .cast<ExpandableItem>(),
-      backgrounds: backgroundsJson
-          .map((b) => ExpandableItem.fromJson(b))
-          .toList()
-          .cast<ExpandableItem>(),
-      merits: meritsJson
-          .map((m) => ExpandableItem.fromJson(m))
-          .toList()
-          .cast<ExpandableItem>(),
-      flaws: (json['flaws'] as List? ?? [])
-          .map((f) => ExpandableItem.fromJson(f))
-          .toList()
-          .cast<ExpandableItem>(),
+      disciplines: _itemsFromJson(json['disciplines']),
+      backgrounds: _itemsFromJson(backgroundsJson),
+      merits: _itemsFromJson(meritsJson),
+      flaws: _itemsFromJson(json['flaws']),
       virtues: TraitIds.decodeIntMap(
         Map<String, dynamic>.from(
           json['virtues'] ?? {'conscience': 0, 'selfControl': 0, 'courage': 0},
@@ -253,11 +244,32 @@ class Character {
       chronicleId: json['chronicleId'],
       drivePlayerName: json['drivePlayerName'],
       updatedAt: json['updatedAt'] ?? 0,
-      healthLevels: (json['healthLevels'] as List? ?? [])
-          .map((e) => InjuryLevel.values[e as int])
-          .toList()
-          .cast<InjuryLevel>(),
+      healthLevels: _healthFromJson(json['healthLevels']),
     );
+  }
+
+  static List<ExpandableItem> _itemsFromJson(dynamic raw) {
+    if (raw is! List) return [];
+    final out = <ExpandableItem>[];
+    for (final e in raw) {
+      if (e is Map) {
+        out.add(ExpandableItem.fromJson(Map<String, dynamic>.from(e)));
+      }
+    }
+    return out;
+  }
+
+  static List<InjuryLevel> _healthFromJson(dynamic raw) {
+    final out = List<InjuryLevel>.filled(healthBoxCount, InjuryLevel.empty);
+    if (raw is! List) return out;
+    for (var i = 0; i < raw.length && i < healthBoxCount; i++) {
+      final e = raw[i];
+      final idx = e is int ? e : int.tryParse('$e');
+      if (idx != null && idx >= 0 && idx < InjuryLevel.values.length) {
+        out[i] = InjuryLevel.values[idx];
+      }
+    }
+    return out;
   }
 }
 

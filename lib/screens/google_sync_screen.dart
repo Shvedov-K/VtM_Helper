@@ -27,9 +27,55 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
   void initState() {
     super.initState();
     _reload();
-    _drive.signIn().then((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loginAndRestore();
+    });
+  }
+
+  Future<void> _loginAndRestore() async {
+    if (!mounted) return;
+    try {
+      final acc = await _drive.signIn();
+      if (!mounted) return;
+      setState(() {});
+      if (acc == null) return;
+      await _run(() => _applyRestore());
+    } catch (_) {
       if (mounted) setState(() {});
-    }).catchError((_) {});
+    }
+  }
+
+  Future<void> _applyRestore({bool force = false}) async {
+    final result = await _drive.restoreOnSignIn(
+      force: force,
+      interactive: force,
+    );
+    await _reload();
+    if (!mounted) return;
+    if (result == null) {
+      _status = 'Синхронизация уже выполнена в этой сессии.';
+      return;
+    }
+    if (result.needsConsent) {
+      _status =
+          'Аккаунт Google есть, но нет токена Drive. '
+          'Нажми «Синхронизировать Диск» и разреши доступ к Диску.';
+    } else if (result.isEmpty) {
+      final extra =
+          result.detail == null || result.detail!.isEmpty ? '' : ' (${result.detail})';
+      _status =
+          'На Диске не нашлись хроники этого аккаунта$extra. '
+          'Проверь, что вход выполнен тем же Google-аккаунтом, которым заливали лист.';
+    } else {
+      _status =
+          'Синхронизировано: хроник ${result.chroniclesFound} '
+          '(новых ${result.chroniclesAdded}), '
+          'листов +${result.addedCharacters}, '
+          'обновлено ${result.updatedCharacters}';
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(_status!)),
+    );
   }
 
   Future<void> _reload() async {
@@ -75,9 +121,9 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
               child: const Padding(
                 padding: EdgeInsets.all(12),
                 child: Text(
-                  'В lib/services/google_config.dart ещё не вставлен '
-                  'Web client ID. Без него вход на Android часто не даёт '
-                  'токен для Drive.',
+                  'Скопируй dart_defines.json.example в dart_defines.json '
+                  'и запускай с --dart-define-from-file=dart_defines.json. '
+                  'Без GOOGLE_SERVER_CLIENT_ID вход в Google не заработает.',
                 ),
               ),
             ),
@@ -88,7 +134,8 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                 padding: EdgeInsets.all(12),
                 child: Text(
                   'На Windows-приложении входа в Google нет. '
-                  'Используй Android APK или веб: flutter run -d chrome',
+                  'Используй Android APK или веб: '
+                  'flutter run -d chrome --dart-define-from-file=dart_defines.json',
                 ),
               ),
             ),
@@ -104,22 +151,49 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                   : () => _run(() async {
                         final acc = await _drive.signIn();
                         if (acc == null) throw StateError('Вход отменён');
-                        setState(() {});
+                        final ok = await _drive.ensureDriveAccess(
+                          interactive: true,
+                        );
+                        if (!ok) {
+                          throw StateError(
+                            'Google не выдал доступ к Drive. Разреши Диск в окне Google.',
+                          );
+                        }
+                        await _applyRestore(force: true);
                       }),
               icon: const Icon(Icons.login),
               label: const Text('Войти в Google'),
             )
-          else
+          else ...[
+            ElevatedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => _run(() async {
+                        final ok = await _drive.ensureDriveAccess(
+                          interactive: true,
+                        );
+                        if (!ok) {
+                          throw StateError(
+                            'Google не выдал доступ к Drive. Разреши Диск в окне Google.',
+                          );
+                        }
+                        await _applyRestore(force: true);
+                      }),
+              icon: const Icon(Icons.sync),
+              label: const Text('Синхронизировать Диск'),
+            ),
+            const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
                   : () => _run(() async {
                         await _drive.signOut();
-                        setState(() {});
+                        if (mounted) setState(() {});
                       }),
               icon: const Icon(Icons.logout),
               label: const Text('Выйти'),
             ),
+          ],
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: _busy ? null : _joinByLink,
@@ -142,13 +216,38 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
           if (_status != null)
             Padding(
               padding: const EdgeInsets.only(top: 12),
-              child: Text(_status!, style: const TextStyle(color: Colors.redAccent)),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: SelectableText(
+                      _status!,
+                      style: const TextStyle(color: Colors.redAccent),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Копировать',
+                    icon: const Icon(Icons.copy, size: 18),
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: _status!));
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Сообщение скопировано')),
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
           const SizedBox(height: 24),
           const Text(
             'Как это работает: рассказчик создаёт папку хроники на Диске '
-            'и шарит её игрокам как обычную папку Google Drive. '
-            'Игрок вставляет id папки (из ссылки) и забирает/отправляет листы кнопками.',
+            'и получает ссылку. Ссылка — секрет: кто её знает, может читать '
+            'хронику и писать в папку игроков. Не выкладывайте её публично. '
+            'Игрок вставляет ссылку и забирает/отправляет листы кнопками. '
+            'После входа в Google приложение само ищет хроники этого аккаунта '
+            'на Диске и подтягивает листы (и у рассказчика, и у игрока). '
+            'Скрытые заметки мастера на Диск не уходят.',
             style: TextStyle(color: Colors.white70),
           ),
         ],
@@ -220,7 +319,10 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
       c.inviteLink = created.inviteLink;
       c.updatedAt = DateTime.now().millisecondsSinceEpoch;
       await _persist(c);
-      setState(() => _status = 'Ссылка готова — отправьте игрокам');
+      await _drive.uploadChronicle(chronicle: c, characters: const []);
+      if (mounted) {
+        setState(() => _status = 'Ссылка готова — отправьте игрокам');
+      }
     });
   }
 
@@ -228,70 +330,96 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
     if (!_drive.isSignedIn) {
       await _drive.signIn();
     }
+    if (!mounted) return;
     final linkCtrl = TextEditingController();
     final nameCtrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Присоединиться к хронике'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: linkCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Пригласительная ссылка',
-                hintText: 'https://drive.google.com/drive/folders/...',
-                border: OutlineInputBorder(),
+    bool? ok;
+    try {
+      ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Присоединиться к хронике'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: linkCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Пригласительная ссылка',
+                  hintText: 'https://drive.google.com/drive/folders/...',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Ваше имя в хронике',
-                hintText: 'Как подписать папку игрока',
-                border: OutlineInputBorder(),
+              const SizedBox(height: 12),
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Ваше имя в хронике',
+                  hintText: 'Как подписать папку игрока',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Войти')),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Войти')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    final raw = linkCtrl.text.trim();
-    final playerName = nameCtrl.text.trim();
-    if (raw.isEmpty || playerName.isEmpty) {
-      setState(() => _status = 'Нужны и ссылка, и имя');
-      return;
+      );
+      if (ok != true) return;
+      final raw = linkCtrl.text.trim();
+      final playerName = nameCtrl.text.trim();
+      if (raw.isEmpty || playerName.isEmpty) {
+        if (mounted) setState(() => _status = 'Нужны и ссылка, и имя');
+        return;
+      }
+      await _run(() async {
+        final folderId = _parseFolderId(raw);
+        final invite = raw.contains('http')
+            ? raw
+            : 'https://drive.google.com/drive/folders/$folderId';
+        final remoteName = await _drive.readChronicleName(folderId);
+        final joined = await _drive.joinChronicle(
+          rootFolderId: folderId,
+          playerName: playerName,
+          chronicleName: remoteName,
+          inviteLink: invite,
+        );
+        final all = await _storage.loadChronicles();
+        final existing = all.where((c) => c.driveFolderId == folderId).toList();
+        if (existing.isNotEmpty) {
+          final c = existing.first;
+          if (c.role == ChronicleRole.player) {
+            c.playerDisplayName = playerName;
+            c.playerFolderId = joined.playerFolderId;
+          }
+          c.inviteLink = invite;
+          if (remoteName != null && remoteName.isNotEmpty) {
+            c.name = remoteName;
+          }
+          c.updatedAt = DateTime.now().millisecondsSinceEpoch;
+        } else {
+          all.add(
+            Chronicle(
+              id: const Uuid().v4(),
+              name: remoteName ?? 'Хроника',
+              role: ChronicleRole.player,
+              driveFolderId: folderId,
+              inviteLink: invite,
+              playerDisplayName: playerName,
+              playerFolderId: joined.playerFolderId,
+            ),
+          );
+        }
+        await _storage.saveChronicles(all);
+        await _reload();
+        if (mounted) setState(() => _status = 'Вы в хронике как $playerName');
+      });
+    } finally {
+      linkCtrl.dispose();
+      nameCtrl.dispose();
     }
-    await _run(() async {
-      final folderId = _parseFolderId(raw);
-      final joined = await _drive.joinChronicle(
-        rootFolderId: folderId,
-        playerName: playerName,
-      );
-      final chronicle = Chronicle(
-        id: const Uuid().v4(),
-        name: playerName,
-        role: ChronicleRole.player,
-        driveFolderId: folderId,
-        inviteLink: raw.contains('http') ? raw : 'https://drive.google.com/drive/folders/$folderId',
-        playerDisplayName: playerName,
-        playerFolderId: joined.playerFolderId,
-      );
-      // имя хроники лучше с Диска, если есть chronicle.json — пока имя игрока заменим на «Хроника»
-      chronicle.name = 'Хроника';
-      final all = await _storage.loadChronicles();
-      all.add(chronicle);
-      await _storage.saveChronicles(all);
-      await _reload();
-      setState(() => _status = 'Вы в хронике как $playerName');
-    });
   }
 
   String _parseFolderId(String raw) {
@@ -324,12 +452,24 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
         characterName: c.name,
         detail: '${mine.length} персонаж(ей)',
       );
-      setState(() => _status = 'Отправлено: ${mine.length} персонаж(ей)');
+      if (mounted) {
+        setState(() => _status = 'Отправлено: ${mine.length} персонаж(ей)');
+      }
     });
   }
 
   Future<void> _download(Chronicle c) async {
     await _run(() async {
+      final folderId = c.driveFolderId;
+      if (folderId != null && folderId.isNotEmpty) {
+        final remoteName = await _drive.readChronicleName(folderId);
+        if (remoteName != null &&
+            remoteName.isNotEmpty &&
+            remoteName != c.name) {
+          c.name = remoteName;
+          await _persist(c);
+        }
+      }
       final incoming = await _drive.downloadCharacters(c);
       final local = await _storage.loadCharacters();
       var added = 0;
@@ -337,12 +477,20 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
       var skipped = 0;
       for (final ch in incoming) {
         ch.chronicleId = c.id;
+        if (c.role != ChronicleRole.storyteller) {
+          ch.storytellerPrivateNotes = '';
+        }
         final idx = local.indexWhere((x) => x.id == ch.id);
         if (idx == -1) {
           await _storage.addCharacter(ch);
           added++;
         } else {
           final localChar = local[idx];
+          if (c.role == ChronicleRole.storyteller &&
+              ch.storytellerPrivateNotes.isEmpty &&
+              localChar.storytellerPrivateNotes.isNotEmpty) {
+            ch.storytellerPrivateNotes = localChar.storytellerPrivateNotes;
+          }
           if (ch.updatedAt == localChar.updatedAt) {
             skipped++;
             continue;
@@ -354,7 +502,7 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
             await _storage.addSyncLog(
               action: 'Скачивание (перезапись)',
               characterName: ch.name,
-              detail: _stamp(localChar.updatedAt) + ' → ' + _stamp(ch.updatedAt),
+              detail: '${_stamp(localChar.updatedAt)} → ${_stamp(ch.updatedAt)}',
             );
           } else {
             skipped++;
@@ -367,6 +515,7 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
         detail: '+$added, перезаписано $updated, пропущено $skipped',
       );
       await _reload();
+      if (!mounted) return;
       setState(() {
         if (incoming.isEmpty) {
           _status =

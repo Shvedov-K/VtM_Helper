@@ -1,8 +1,32 @@
+import java.io.File
+import java.io.FileInputStream
+import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val keystoreProperties = Properties()
+val androidKeystoreFile = rootProject.file("key.properties")
+val flutterKeystoreFile = rootProject.file("../key.properties")
+when {
+    androidKeystoreFile.exists() -> keystoreProperties.load(FileInputStream(androidKeystoreFile))
+    flutterKeystoreFile.exists() -> keystoreProperties.load(FileInputStream(flutterKeystoreFile))
+}
+
+fun resolveStoreFile(raw: String?): File? {
+    if (raw.isNullOrBlank()) return null
+    val asFile = File(raw)
+    if (asFile.isAbsolute) return asFile
+    val fromAndroid = rootProject.file(raw)
+    if (fromAndroid.exists()) return fromAndroid
+    val fromRepoRoot = rootProject.file("../$raw")
+    if (fromRepoRoot.exists()) return fromRepoRoot
+    return fromAndroid
 }
 
 android {
@@ -13,10 +37,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"  
     }
 
     defaultConfig {
@@ -32,10 +52,10 @@ android {
 
     signingConfigs {
         create("release") {
-            keyAlias = "upload"
-            keyPassword = "Armada.69"
-            storeFile = file("C:/Users/xtend/flutter/vtm_v20_helper/upload-keystore.jks")
-            storePassword = "Armada.69"
+            keyAlias = keystoreProperties.getProperty("keyAlias")
+            keyPassword = keystoreProperties.getProperty("keyPassword")
+            storePassword = keystoreProperties.getProperty("storePassword")
+            storeFile = resolveStoreFile(keystoreProperties.getProperty("storeFile"))
         }
     }
 
@@ -49,6 +69,12 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 

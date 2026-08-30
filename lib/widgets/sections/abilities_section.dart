@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:vtm_helper/theme/sheet_theme.dart';
 import 'package:vtm_helper/descriptions/abilities_descriptions.dart';
 import 'package:vtm_helper/descriptions/specialty_suggestions.dart';
-import 'package:vtm_helper/style/text_style.dart';
-import 'package:vtm_helper/widgets/attribure_row.dart';
+import 'package:vtm_helper/widgets/attribute_row.dart';
 
 enum AbilityCategory { talent, skill, knowledge }
 

@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:vtm_helper/theme/sheet_theme.dart';
 import 'package:vtm_helper/models/character.dart';
-import 'package:vtm_helper/style/text_style.dart';
 import 'package:vtm_helper/widgets/expandable_item_row.dart';
-import 'package:vtm_helper/widgets/attribure_row.dart';
+import 'package:vtm_helper/widgets/attribute_row.dart';
 
 class AdvantagesSection extends StatefulWidget {
   final List<ExpandableItem> disciplines;

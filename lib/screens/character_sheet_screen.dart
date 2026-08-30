@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:vtm_helper/theme/sheet_theme.dart';
 import 'package:vtm_helper/models/character.dart';
@@ -36,6 +37,9 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
   List<String> _remoteChanges = [];
   bool _checkingDrive = false;
   bool _driveCheckFailed = false;
+  Future<void> _saveInFlight = Future.value();
+  Timer? _notesDebounce;
+  bool _pendingNotesSave = false;
 
   @override
   void initState() {
@@ -43,6 +47,22 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
     _character = widget.character;
     _loadCustomThemes();
     _loadChronicles().then((_) => _checkDriveUpdate());
+  }
+
+  @override
+  void dispose() {
+    _notesDebounce?.cancel();
+    if (_pendingNotesSave) {
+      _saveCharacter();
+    }
+    super.dispose();
+  }
+
+  bool get _driveHasUpdate {
+    final remote = _remoteSheet;
+    if (remote == null) return false;
+    if (remote.updatedAt > _character.updatedAt) return true;
+    return _remoteChanges.isNotEmpty;
   }
 
   Future<void> _loadChronicles() async {
@@ -71,9 +91,12 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
     });
   }
 
-  Future<void> _saveCharacter() async {
-    _character.updatedAt = DateTime.now().millisecondsSinceEpoch;
-    await _storage.updateCharacter(_character);
+  Future<void> _saveCharacter() {
+    _saveInFlight = _saveInFlight.then((_) async {
+      _character.updatedAt = DateTime.now().millisecondsSinceEpoch;
+      await _storage.updateCharacter(_character);
+    });
+    return _saveInFlight;
   }
 
   // Общие методы для обновления разных частей модели
@@ -405,6 +428,7 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
     if (created == null) return;
     final list = List<SheetTheme>.from(_customThemes)..add(created);
     await _storage.saveCustomThemes(list);
+    if (!mounted) return;
     setState(() {
       _customThemes = list;
       _character.sheetThemeId = created.id;
@@ -424,6 +448,7 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
         .map((t) => t.id == theme.id ? edited.copyWith(id: theme.id) : t)
         .toList();
     await _storage.saveCustomThemes(list);
+    if (!mounted) return;
     setState(() {
       _customThemes = list;
       if (_character.sheetThemeId == theme.id) {
@@ -455,18 +480,16 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
 
   Future<void> _syncUploadThis() async {
     final chron = _assignedChronicle;
-    if (chron == null || chron.driveFolderId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сначала привяжите лист к хронике с папкой на Диске')),
-      );
-      return;
-    }
     try {
       _character.updatedAt = DateTime.now().millisecondsSinceEpoch;
-      await DriveSyncService.instance.uploadOneCharacter(
-        chronicle: chron,
-        character: _character,
-      );
+      if (chron == null || chron.driveFolderId == null) {
+        await DriveSyncService.instance.uploadStandaloneCharacter(_character);
+      } else {
+        await DriveSyncService.instance.uploadOneCharacter(
+          chronicle: chron,
+          character: _character,
+        );
+      }
       await _storage.addSyncLog(
         action: 'Отправка с листа',
         characterName: _character.name,
@@ -492,14 +515,20 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
 
   Future<void> _checkDriveUpdate() async {
     final chron = _assignedChronicle;
-    if (chron == null || chron.driveFolderId == null) return;
     if (_checkingDrive) return;
     _checkingDrive = true;
     try {
-      final remote = await DriveSyncService.instance.downloadOneCharacter(
-        chronicle: chron,
-        characterId: _character.id,
-      );
+      final Character? remote;
+      if (chron == null || chron.driveFolderId == null) {
+        remote = await DriveSyncService.instance.downloadStandaloneCharacter(
+          _character.id,
+        );
+      } else {
+        remote = await DriveSyncService.instance.downloadOneCharacter(
+          chronicle: chron,
+          characterId: _character.id,
+        );
+      }
       if (!mounted) return;
       if (remote == null) {
         setState(() {
@@ -509,7 +538,8 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
         });
         return;
       }
-      remote.chronicleId = chron.id;
+      remote.chronicleId = chron?.id;
+      _mergeIncomingPrivateNotes(remote);
       final changes = CharacterDiff.describe(_character, remote);
       setState(() {
         _remoteSheet = remote;
@@ -549,6 +579,7 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
     final changes = _remoteChanges.isEmpty
         ? CharacterDiff.describe(_character, remote)
         : _remoteChanges;
+    if (!mounted) return;
     final go = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -588,6 +619,7 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
       ),
     );
     if (go != true) return;
+    _mergeIncomingPrivateNotes(remote);
     setState(() {
       _character = remote;
       _remoteSheet = null;
@@ -647,16 +679,54 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
       },
     );
     if (chosen == null) return;
+    final previous = _assignedChronicle;
     setState(() {
       _character.chronicleId = chosen.isEmpty ? null : chosen;
     });
     await _saveCharacter();
+    Chronicle? next;
+    if (chosen.isNotEmpty) {
+      for (final c in _chronicles) {
+        if (c.id == chosen) {
+          next = c;
+          break;
+        }
+      }
+    }
+    try {
+      await DriveSyncService.instance.relocateCharacter(
+        character: _character,
+        from: previous,
+        to: next,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Локально перенесено, Диск: $e')),
+      );
+    }
+  }
+
+  void _mergeIncomingPrivateNotes(Character incoming) {
+    if (!_storytellerMode) {
+      incoming.storytellerPrivateNotes = '';
+      return;
+    }
+    if (incoming.storytellerPrivateNotes.isEmpty &&
+        _character.storytellerPrivateNotes.isNotEmpty) {
+      incoming.storytellerPrivateNotes = _character.storytellerPrivateNotes;
+    }
   }
 
   void _updateNotes(String shared, String private) {
     _character.storytellerNotes = shared;
     _character.storytellerPrivateNotes = private;
-    _saveCharacter();
+    _pendingNotesSave = true;
+    _notesDebounce?.cancel();
+    _notesDebounce = Timer(const Duration(milliseconds: 400), () {
+      _pendingNotesSave = false;
+      _saveCharacter();
+    });
   }
 
   void _updateHealth(List<InjuryLevel> newLevels) {
@@ -674,21 +744,19 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.cloud_upload_outlined),
-            tooltip: 'Отправить на Диск',
+            tooltip: _assignedChronicle?.driveFolderId == null
+                ? 'Сохранить на Диск (личные листы)'
+                : 'Отправить на Диск',
             onPressed: _syncUploadThis,
           ),
           IconButton(
             icon: Icon(
-              _remoteSheet != null && _remoteSheet!.updatedAt > _character.updatedAt
+              _driveHasUpdate
                   ? Icons.cloud_download
                   : Icons.cloud_download_outlined,
-              color: _remoteSheet != null &&
-                      _remoteSheet!.updatedAt > _character.updatedAt
-                  ? Colors.lightBlueAccent
-                  : null,
+              color: _driveHasUpdate ? Colors.lightBlueAccent : null,
             ),
-            tooltip: _remoteSheet != null &&
-                    _remoteSheet!.updatedAt > _character.updatedAt
+            tooltip: _driveHasUpdate
                 ? 'На Диске есть новая версия'
                 : 'Скачать с Диска',
             onPressed: _syncDownloadThis,
@@ -838,6 +906,9 @@ class _CharacterSheetScreenState extends State<CharacterSheetScreen> {
                     ),
                     const SizedBox(height: 24),
                     NotesSection(
+                      key: ValueKey(
+                        '${_character.id}-$_isEditing-${identityHashCode(_character)}',
+                      ),
                       sharedNotes: _character.storytellerNotes,
                       privateNotes: _character.storytellerPrivateNotes,
                       isStorytellerMode: _storytellerMode,

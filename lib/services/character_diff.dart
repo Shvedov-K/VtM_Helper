@@ -4,9 +4,9 @@ class CharacterDiff {
   static List<String> describe(Character local, Character remote) {
     final out = <String>[];
 
-    void scalar(String label, Object a, Object b) {
-      if (a.toString() != b.toString()) {
-        out.add('$label: $a → $b');
+    void scalar(String label, Object? a, Object? b) {
+      if ((a ?? '').toString() != (b ?? '').toString()) {
+        out.add('$label: ${a ?? "—"} → ${b ?? "—"}');
       }
     }
 
@@ -23,12 +23,16 @@ class CharacterDiff {
     scalar('Воля (тек.)', local.willpowerCurrent, remote.willpowerCurrent);
     scalar('Кровь', local.bloodPool, remote.bloodPool);
     scalar('Опыт', local.experience, remote.experience);
+    scalar('Тема листа', local.sheetThemeId, remote.sheetThemeId);
+    scalar('Хроника', local.chronicleId, remote.chronicleId);
+    scalar('Игрок на Диске', local.drivePlayerName, remote.drivePlayerName);
 
     _mapInt(out, 'Атрибут', local.attributes, remote.attributes);
     _mapInt(out, 'Способность', local.abilities, remote.abilities);
     _mapInt(out, 'Добродетель', local.virtues, remote.virtues);
     _mapStr(out, 'Спец. атрибута', local.attributeSpecialties, remote.attributeSpecialties);
     _mapStr(out, 'Спец. способности', local.abilitySpecialties, remote.abilitySpecialties);
+    _mapStr(out, 'Описание способности', local.customAbilityDescriptions, remote.customAbilityDescriptions);
     _items(out, 'Дисциплина', local.disciplines, remote.disciplines);
     _items(out, 'Дополнение', local.backgrounds, remote.backgrounds);
     _items(out, 'Мерит', local.merits, remote.merits);
@@ -45,6 +49,18 @@ class CharacterDiff {
     }
     if (!_healthEq(local.healthLevels, remote.healthLevels)) {
       out.add('Здоровье изменено');
+    }
+
+    if (out.isEmpty) {
+      final a = Map<String, dynamic>.from(
+        local.toJson(includePrivateNotes: true),
+      )..remove('updatedAt');
+      final b = Map<String, dynamic>.from(
+        remote.toJson(includePrivateNotes: true),
+      )..remove('updatedAt');
+      if (a.toString() != b.toString()) {
+        out.add('Прочие поля изменены');
+      }
     }
 
     return out;
@@ -84,16 +100,21 @@ class CharacterDiff {
     List<ExpandableItem> a,
     List<ExpandableItem> b,
   ) {
-    final am = {for (final e in a) e.name: e.value};
-    final bm = {for (final e in b) e.name: e.value};
+    final am = {for (final e in a) e.name: e};
+    final bm = {for (final e in b) e.name: e};
     final keys = {...am.keys, ...bm.keys};
     for (final k in keys) {
       if (!am.containsKey(k)) {
-        out.add('$prefix «$k»: добавлено (${bm[k]})');
+        out.add('$prefix «$k»: добавлено (${bm[k]!.value})');
       } else if (!bm.containsKey(k)) {
         out.add('$prefix «$k»: удалено');
-      } else if (am[k] != bm[k]) {
-        out.add('$prefix «$k»: ${am[k]} → ${bm[k]}');
+      } else {
+        if (am[k]!.value != bm[k]!.value) {
+          out.add('$prefix «$k»: ${am[k]!.value} → ${bm[k]!.value}');
+        }
+        if ((am[k]!.description ?? '') != (bm[k]!.description ?? '')) {
+          out.add('$prefix «$k»: описание изменено');
+        }
       }
     }
   }

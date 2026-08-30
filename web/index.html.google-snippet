@@ -1,3 +1,5 @@
-<!-- В web/index.html внутри <head> добавь (подставь свой Web client ID):
-<meta name="google-signin-client_id" content="ТВОЙ_WEB_CLIENT_ID.apps.googleusercontent.com">
--->
+<!-- Client ID больше не кладётся в index.html.
+     Задай GOOGLE_SERVER_CLIENT_ID в dart_defines.json
+     (см. dart_defines.json.example) и запускай с
+     --dart-define-from-file=dart_defines.json.
+     GoogleSignIn получает его из kGoogleServerClientId. -->

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:vtm_helper/theme/sheet_theme.dart';
 import 'package:vtm_helper/models/character.dart';
-import 'package:vtm_helper/style/text_style.dart'; // для InjuryLevel
 
 class HealthSection extends StatelessWidget {
   final List<InjuryLevel> healthLevels;
@@ -45,8 +44,16 @@ class HealthSection extends StatelessWidget {
     );
   }
 
+  List<InjuryLevel> get _levels {
+    final out = List<InjuryLevel>.from(healthLevels);
+    while (out.length < Character.healthBoxCount) {
+      out.add(InjuryLevel.empty);
+    }
+    return out;
+  }
+
   void _toggleInjury(int index) {
-    final newLevels = List<InjuryLevel>.from(healthLevels);
+    final newLevels = _levels;
     switch (newLevels[index]) {
       case InjuryLevel.empty:
         newLevels[index] = InjuryLevel.bashing;
@@ -65,7 +72,7 @@ class HealthSection extends StatelessWidget {
     IconData iconData;
     Color color;
 
-    switch (healthLevels[index]) {
+    switch (_levels[index]) {
       case InjuryLevel.empty:
         iconData = Icons.circle_outlined;
         color = SheetThemeScope.of(context).muted;
@@ -96,7 +103,7 @@ class HealthSection extends StatelessWidget {
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: SheetThemeScope.of(context).ink),
         ),
         const SizedBox(height: 8),
-        ...List.generate(7, (index) {
+        ...List.generate(Character.healthBoxCount, (index) {
           if (useVerticalLayout) {
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 6.0),
