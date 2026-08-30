@@ -172,3 +172,27 @@ storeFile=upload-keystore.jks
 ```
 flutter build apk --release --dart-define-from-file=dart_defines.json
 ```
+
+### Google Sign-In на Android (`ApiException: 10`)
+
+Ошибка 10 (`DEVELOPER_ERROR`) значит: в Cloud нет Android OAuth-клиента с **этим** package + **этим** SHA-1. Web-клиента недостаточно.
+
+Package: `xtended16gmail.com.vtm_helper`
+
+Google Cloud Console → APIs & Services → Credentials → Create credentials → OAuth client ID → **Android**:
+
+| Сборка | SHA-1 (вставить в Android-клиент) |
+| --- | --- |
+| `flutter run` (debug, эта машина) | `67:DD:35:D0:C3:BA:2D:D3:47:86:00:03:4C:52:98:DC:0B:06:81:40` |
+| release APK (`upload-keystore.jks`) | `B4:BD:76:D7:B8:08:F5:8E:B3:18:0A:C7:F7:88:91:91:F7:3A:0D:30` |
+
+Оба SHA-1 можно повесить на один Android-клиент (несколько отпечатков) или сделать два клиента с одним package. Web-клиент **не удаляй** — его ID это `GOOGLE_SERVER_CLIENT_ID` / `serverClientId`.
+
+После смены SHA-1 подожди несколько минут. Debug-keystore живёт в `%USERPROFILE%\.android\debug.keystore` и на новой машине другой: после переезда debug SHA-1 надо добавить заново.
+
+Свой SHA-1:
+
+```
+keytool -list -v -keystore %USERPROFILE%\.android\debug.keystore -alias androiddebugkey -storepass android
+keytool -list -v -keystore upload-keystore.jks -alias upload
+```

@@ -129,6 +129,8 @@ class DriveSyncService {
         'Плагин Google Sign-In не собран для этой платформы. '
         'Нужен полный перезапуск на Android или Flutter Web.',
       );
+    } on PlatformException catch (e) {
+      throw DriveException(_describeGoogleSignInError(e));
     }
   }
 
@@ -214,8 +216,18 @@ class DriveSyncService {
         GoogleAuthClient({'Authorization': 'Bearer $_webAccessToken'}),
       );
     }
-    var user = _googleSignIn.currentUser ??
-        (interactive ? await _googleSignIn.signIn() : await trySilentSignIn());
+    GoogleSignInAccount? user = _googleSignIn.currentUser;
+    if (user == null) {
+      if (interactive) {
+        try {
+          user = await _googleSignIn.signIn();
+        } on PlatformException catch (e) {
+          throw DriveException(_describeGoogleSignInError(e));
+        }
+      } else {
+        user = await trySilentSignIn();
+      }
+    }
     if (user == null) {
       throw DriveException(
         interactive
@@ -1392,6 +1404,30 @@ class _DiscoveredChronicle {
         playerFolderId: playerFolderId,
         playerDisplayName: playerDisplayName,
       );
+}
+
+String _describeGoogleSignInError(PlatformException e) {
+  final blob = '${e.code} ${e.message} ${e.details}';
+  if (RegExp(r'ApiException:\s*10\b').hasMatch(blob) ||
+      blob.contains('DEVELOPER_ERROR')) {
+    return 'Google Sign-In: ошибка 10 — Android OAuth не узнаёт подпись приложения.\n'
+        'В Google Cloud → Credentials нужен OAuth-клиент типа Android:\n'
+        '• package: xtended16gmail.com.vtm_helper\n'
+        '• SHA-1 debug (flutter run): '
+        '67:DD:35:D0:C3:BA:2D:D3:47:86:00:03:4C:52:98:DC:0B:06:81:40\n'
+        '• SHA-1 release APK: '
+        'B4:BD:76:D7:B8:08:F5:8E:B3:18:0A:C7:F7:88:91:91:F7:3A:0D:30\n'
+        'Web-клиент не удаляй (его ID в dart_defines.json). '
+        'После сохранения SHA-1 подожди несколько минут.';
+  }
+  if (RegExp(r'ApiException:\s*7\b').hasMatch(blob)) {
+    return 'Нет сети или Google Play services не отвечает.';
+  }
+  if (e.code == 'sign_in_canceled' ||
+      RegExp(r'ApiException:\s*12501\b').hasMatch(blob)) {
+    return 'Вход в Google отменён.';
+  }
+  return e.message ?? e.toString();
 }
 
 class DriveException implements Exception {
