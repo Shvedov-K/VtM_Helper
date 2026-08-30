@@ -124,7 +124,7 @@ void _onToken(gis.TokenResponse response) {
   final err = response.error;
   if (err != null && err.isNotEmpty) {
     pending.completeError(
-      StateError(response.error_description ?? err),
+      StateError(_describeGisOAuthError(err, response.error_description)),
     );
     return;
   }
@@ -178,6 +178,19 @@ void _onGisError(gis.GoogleIdentityServicesError? error) {
   pending.completeError(
     StateError(error.message ?? type?.name ?? 'Ошибка входа Google'),
   );
+}
+
+String _describeGisOAuthError(String err, String? description) {
+  final blob = '$err ${description ?? ''}';
+  if (blob.contains('origin_mismatch')) {
+    final origin = web.window.location.origin;
+    return 'Google: origin_mismatch. В OAuth-клиенте типа Web application '
+        'добавь Authorized JavaScript origin ровно так:\n'
+        '$origin\n'
+        'Без пути (/VtM_Helper) и без слэша в конце. '
+        'localhost-origins не удаляй. После сохранения подожди 5–15 минут.';
+  }
+  return description?.isNotEmpty == true ? description! : err;
 }
 
 Future<WebGoogleSession?> webGoogleSignIn() async {

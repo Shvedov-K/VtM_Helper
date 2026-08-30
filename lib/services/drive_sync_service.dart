@@ -99,7 +99,15 @@ class DriveSyncService {
     if (kIsWeb) {
       try {
         final session = await webGoogleSignIn();
-        if (session == null) return false;
+        if (session == null) {
+          throw DriveException(
+            'Вход не выполнен (окно закрыто).\n'
+            'Если Google показал origin_mismatch — в Web-клиенте добавь '
+            'Authorized JavaScript origin:\n'
+            '${Uri.base.origin}\n'
+            'Без /VtM_Helper и без слэша в конце. Подожди 5–15 минут.',
+          );
+        }
         _webAccessToken = session.accessToken;
         _webEmail = session.email;
         _webAuthChanges.add(null);
