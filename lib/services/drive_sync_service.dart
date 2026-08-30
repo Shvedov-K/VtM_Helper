@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +11,7 @@ import 'package:vtm_helper/services/google_auth_client.dart';
 import 'package:vtm_helper/services/google_config.dart';
 import 'package:vtm_helper/services/storage_service.dart';
 import 'package:vtm_helper/services/sync_payload.dart';
+import 'package:vtm_helper/services/web_google_oauth.dart';
 
 class DriveSyncService {
   DriveSyncService._();
@@ -43,12 +45,69 @@ class DriveSyncService {
 
   bool _restoredThisSession = false;
   Future<DriveRestoreResult?>? _restoreInFlight;
+  String? _webAccessToken;
+  String? _webEmail;
+  final StreamController<void> _webAuthChanges = StreamController<void>.broadcast();
 
   GoogleSignInAccount? get account => _googleSignIn.currentUser;
-  bool get isSignedIn => account != null;
-  String? get email => account?.email;
+  bool get isSignedIn =>
+      kIsWeb ? _webAccessToken != null : account != null;
+  String? get email => kIsWeb ? _webEmail : account?.email;
+  Stream<void> get onUserChanged => kIsWeb
+      ? _webAuthChanges.stream
+      : _googleSignIn.onCurrentUserChanged.map((_) {});
 
-  Future<GoogleSignInAccount?> signIn() async {
+  Future<GoogleSignInAccount?> trySilentSignIn() async {
+    if (!isGoogleSignInSupported || kGoogleServerClientId.isEmpty) return null;
+    // GIS One Tap on web often hangs ~1 min with `unknown_reason`.
+    if (kIsWeb) {
+      final restored = webGoogleRestoreSession();
+      if (restored != null) {
+        _webAccessToken = restored.accessToken;
+        _webEmail = restored.email;
+        return null;
+      }
+      return null;
+    }
+    try {
+      return await _googleSignIn.signInSilently().timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => null,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void>? _warmUpInFlight;
+
+  Future<void> warmUp() {
+    return _warmUpInFlight ??= _warmUpBody();
+  }
+
+  Future<void> _warmUpBody() async {
+    try {
+      if (kIsWeb) await webGoogleEnsureSdk();
+      await trySilentSignIn();
+      if (!isSignedIn) return;
+      final ok = await ensureDriveAccess(interactive: false);
+      if (ok) await restoreOnSignIn(interactive: false);
+    } catch (_) {}
+  }
+
+  Future<bool> signIn() async {
+    if (kIsWeb) {
+      try {
+        final session = await webGoogleSignIn();
+        if (session == null) return false;
+        _webAccessToken = session.accessToken;
+        _webEmail = session.email;
+        _webAuthChanges.add(null);
+        return true;
+      } on StateError catch (e) {
+        throw DriveException(e.message);
+      }
+    }
     if (!isGoogleSignInSupported) {
       throw UnsupportedError(
         'На Windows/Linux/macOS вход Google в этом приложении не поддерживается. '
@@ -63,13 +122,8 @@ class DriveSyncService {
       );
     }
     try {
-      final existing = await _googleSignIn.signInSilently();
-      if (existing != null) return existing;
       final user = await _googleSignIn.signIn();
-      if (user != null) {
-        await ensureDriveAccess(interactive: true);
-      }
-      return user;
+      return user != null;
     } on MissingPluginException {
       throw UnsupportedError(
         'Плагин Google Sign-In не собран для этой платформы. '
@@ -82,6 +136,13 @@ class DriveSyncService {
     if (!isGoogleSignInSupported) return;
     _restoredThisSession = false;
     _restoreInFlight = null;
+    if (kIsWeb) {
+      _webAccessToken = null;
+      _webEmail = null;
+      webGoogleClearSession();
+      _webAuthChanges.add(null);
+      return;
+    }
     await _googleSignIn.signOut();
   }
 
@@ -101,28 +162,73 @@ class DriveSyncService {
     });
   }
 
-  Future<bool> ensureDriveAccess({required bool interactive}) async {
+  Future<bool> hasDriveToken() => _hasDriveToken();
+
+  Future<bool> _hasDriveToken() async {
+    if (kIsWeb) {
+      if (_webAccessToken != null) return true;
+      final restored = webGoogleRestoreSession();
+      if (restored == null) return false;
+      _webAccessToken = restored.accessToken;
+      _webEmail = restored.email;
+      return true;
+    }
+    final user = _googleSignIn.currentUser;
+    if (user == null) return false;
     try {
-      final has = await _googleSignIn.canAccessScopes(_driveScopes);
-      if (has) return true;
-    } catch (_) {}
-    if (!interactive) return false;
-    try {
-      return await _googleSignIn.requestScopes(_driveScopes);
+      final headers = await user.authHeaders;
+      final auth = headers['Authorization'] ?? headers['authorization'];
+      if (auth != null && auth.startsWith('Bearer ') && auth.length > 20) {
+        return true;
+      }
+      final token = (await user.authentication).accessToken;
+      return token != null && token.isNotEmpty;
     } catch (_) {
       return false;
     }
   }
 
+  Future<bool> ensureDriveAccess({required bool interactive}) async {
+    if (await _hasDriveToken()) return true;
+    if (!interactive) return false;
+    if (kIsWeb) return await signIn();
+    try {
+      await _googleSignIn.requestScopes(_driveScopes);
+    } catch (_) {}
+    return await _hasDriveToken();
+  }
+
   Future<drive.DriveApi> _api({bool interactive = true}) async {
-    var user = _googleSignIn.currentUser ?? await signIn();
+    if (kIsWeb) {
+      if (!await _hasDriveToken()) {
+        if (interactive) {
+          final ok = await signIn();
+          if (!ok) {
+            throw DriveException('Вход в Google отменён.');
+          }
+        } else {
+          throw DriveException('Нет входа в Google.');
+        }
+      }
+      return drive.DriveApi(
+        GoogleAuthClient({'Authorization': 'Bearer $_webAccessToken'}),
+      );
+    }
+    var user = _googleSignIn.currentUser ??
+        (interactive ? await _googleSignIn.signIn() : await trySilentSignIn());
     if (user == null) {
-      throw StateError('Нет входа в Google');
+      throw DriveException(
+        interactive
+            ? 'Нет входа в Google. Нажми «Войти в Google».'
+            : 'Нет входа в Google.',
+      );
     }
     final granted = await ensureDriveAccess(interactive: interactive);
     if (!granted) {
-      throw StateError(
-        'Нет токена Google Drive. Нажми «Войти в Google» и разреши доступ к Диску.',
+      throw DriveException(
+        interactive
+            ? 'Нет доступа к Диску. Нажми «Синхронизировать Диск» и в окне Google разреши Drive (не только аккаунт).'
+            : 'Нет доступа к Диску. Открой Google Диск и нажми «Синхронизировать Диск».',
       );
     }
     user = _googleSignIn.currentUser ?? user;
@@ -133,13 +239,13 @@ class DriveSyncService {
   Future<Map<String, String>> _authHeaders(GoogleSignInAccount user) async {
     final headers = Map<String, String>.from(await user.authHeaders);
     final authHeader = headers['Authorization'] ?? headers['authorization'];
-    if (authHeader != null && authHeader.startsWith('Bearer ') && authHeader.length > 8) {
+    if (authHeader != null && authHeader.startsWith('Bearer ') && authHeader.length > 20) {
       return headers;
     }
     final token = (await user.authentication).accessToken;
     if (token == null || token.isEmpty) {
-      throw StateError(
-        'Google не выдал access token для Drive. Нажми «Войти в Google» ещё раз.',
+      throw DriveException(
+        'Google не выдал токен Диска. Нажми «Синхронизировать Диск» и разреши доступ в окне Google.',
       );
     }
     headers['Authorization'] = 'Bearer $token';
@@ -469,8 +575,10 @@ class DriveSyncService {
     return named.isNotEmpty ? named.first.id : null;
   }
 
-  Future<List<Character>> downloadPersonalCharacters() async {
-    final api = await _api(interactive: false);
+  Future<List<Character>> downloadPersonalCharacters({
+    bool interactive = false,
+  }) async {
+    final api = await _api(interactive: interactive);
     final folderId = await _personalFolderId(api);
     if (folderId == null) return [];
     return _downloadInFolder(api, folderId);
@@ -869,18 +977,23 @@ class DriveSyncService {
       return DriveRestoreResult.needsConsent();
     }
     try {
-      return await _restoreOnSignInBodyAfterAuth();
+      return await _restoreOnSignInBodyAfterAuth(interactive: interactive);
     } catch (e) {
       final msg = e.toString();
-      if (msg.contains('401') || msg.contains('invalid authentication')) {
+      if (!interactive &&
+          (msg.contains('401') ||
+              msg.contains('invalid authentication') ||
+              e is DriveException)) {
         return DriveRestoreResult.needsConsent();
       }
       rethrow;
     }
   }
 
-  Future<DriveRestoreResult> _restoreOnSignInBodyAfterAuth() async {
-    final discovered = await _discoverChronicles();
+  Future<DriveRestoreResult> _restoreOnSignInBodyAfterAuth({
+    required bool interactive,
+  }) async {
+    final discovered = await _discoverChronicles(interactive: interactive);
     final found = discovered.items;
     final storage = StorageService();
     final chronicles = await storage.loadChronicles();
@@ -950,7 +1063,9 @@ class DriveSyncService {
     }
 
     try {
-      final personal = await downloadPersonalCharacters();
+      final personal = await downloadPersonalCharacters(
+        interactive: interactive,
+      );
       final existingChars = await storage.loadCharacters();
       for (final ch in personal) {
         ch.chronicleId = null;
@@ -986,8 +1101,8 @@ class DriveSyncService {
   }
 
   Future<({List<_DiscoveredChronicle> items, String detail})>
-      _discoverChronicles() async {
-    final api = await _api(interactive: false);
+      _discoverChronicles({bool interactive = false}) async {
+    final api = await _api(interactive: interactive);
     final byFolder = <String, _DiscoveredChronicle>{};
     final fileCache = <String, drive.File?>{};
     var ownedCharacterFiles = 0;
@@ -1111,7 +1226,6 @@ class DriveSyncService {
           file.appProperties?['vtm'] != 'character') {
         return;
       }
-      if (!await _isOurPayload(api, file.id!)) return;
       ownedCharacterFiles++;
       final pid = file.parents?.isNotEmpty == true ? file.parents!.first : null;
       if (pid == null) return;
@@ -1177,7 +1291,6 @@ class DriveSyncService {
       q: "name = 'chronicle.json' and 'me' in owners and trashed = false",
       fields: 'nextPageToken, files(id, name, parents)',
     )) {
-      if (f.id == null || !await _isOurPayload(api, f.id!)) continue;
       final parentId = f.parents?.isNotEmpty == true ? f.parents!.first : null;
       if (parentId == null) continue;
       final folder = await cachedFile(parentId);
@@ -1201,45 +1314,10 @@ class DriveSyncService {
     )) {
       await addPlayerFromCharacterFile(f);
     }
-
-    try {
-      for (final f in await _queryFiles(
-        api,
-        q: "trashed = false and appProperties has { key='vtm' and value='character' }",
-        fields: 'nextPageToken, files(id, name, parents, appProperties)',
-      )) {
-        await addPlayerFromCharacterFile(f);
-      }
-    } catch (_) {}
-
-    for (final e in byFolder.entries.toList()) {
-      if (e.value.role != ChronicleRole.storyteller) continue;
-      final n = await readChronicleName(e.key);
-      if (n != null && n.isNotEmpty) {
-        byFolder[e.key] = e.value.withName(n);
-      }
-    }
     return (
       items: byFolder.values.toList(),
-      detail: 'листов VTM на Диске: $ownedCharacterFiles',
+      detail: 'файлов character_*: $ownedCharacterFiles',
     );
-  }
-
-  Future<bool> _isOurPayload(drive.DriveApi api, String fileId) async {
-    try {
-      final media = await api.files.get(
-        fileId,
-        downloadOptions: drive.DownloadOptions.fullMedia,
-        supportsAllDrives: true,
-      ) as drive.Media;
-      final bytes = await media.stream.fold<List<int>>(
-        <int>[],
-        (p, e) => p..addAll(e),
-      );
-      return SyncPayload.looksLikeOurs(utf8.decode(bytes));
-    } catch (_) {
-      return false;
-    }
   }
 
   Future<drive.File?> _getFile(drive.DriveApi api, String id) async {
@@ -1259,30 +1337,21 @@ class DriveSyncService {
     required String q,
     required String fields,
   }) async {
-    Future<List<drive.File>> run({String? corpora}) async {
-      final out = <drive.File>[];
-      String? pageToken;
-      do {
-        final listed = await api.files.list(
-          q: q,
-          $fields: fields,
-          pageSize: 100,
-          pageToken: pageToken,
-          corpora: corpora,
-          supportsAllDrives: true,
-          includeItemsFromAllDrives: true,
-        );
-        out.addAll(listed.files ?? const <drive.File>[]);
-        pageToken = listed.nextPageToken;
-      } while (pageToken != null && pageToken.isNotEmpty);
-      return out;
-    }
-
-    try {
-      final allDrives = await run(corpora: 'allDrives');
-      if (allDrives.isNotEmpty) return allDrives;
-    } catch (_) {}
-    return run();
+    final out = <drive.File>[];
+    String? pageToken;
+    do {
+      final listed = await api.files.list(
+        q: q,
+        $fields: fields,
+        pageSize: 100,
+        pageToken: pageToken,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+      );
+      out.addAll(listed.files ?? const <drive.File>[]);
+      pageToken = listed.nextPageToken;
+    } while (pageToken != null && pageToken.isNotEmpty);
+    return out;
   }
 
   static bool _isChronicleRootName(String? name) {
@@ -1290,8 +1359,11 @@ class DriveSyncService {
     return name.startsWith('VTM — ') || name.startsWith('VTM - ');
   }
 
+  static final _characterFileName =
+      RegExp(r'^character_[0-9a-fA-F-]{8,}\.json$');
+
   static bool _isCharacterFileName(String name) {
-    return name.startsWith('character_') && name.endsWith('.json');
+    return _characterFileName.hasMatch(name);
   }
 }
 
@@ -1320,6 +1392,13 @@ class _DiscoveredChronicle {
         playerFolderId: playerFolderId,
         playerDisplayName: playerDisplayName,
       );
+}
+
+class DriveException implements Exception {
+  final String message;
+  DriveException(this.message);
+  @override
+  String toString() => message;
 }
 
 class DriveRestoreResult {

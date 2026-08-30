@@ -18,14 +18,16 @@ flutter run -d chrome --dart-define-from-file=dart_defines.json --web-hostname=l
 
 В Google Cloud Console → APIs & Services → Credentials → OAuth-клиент типа **Web application** (не Android):
 
-Authorized JavaScript origins:
+Authorized JavaScript origins (без них веб-вход не откроется):
 
 ```
 http://localhost
 http://localhost:7357
 ```
 
-Web client ID достаточно в `dart_defines.json`: его подхватывает `GOOGLE_SERVER_CLIENT_ID` и передаёт в `GoogleSignIn`. В `web/index.html` его класть не нужно.
+Redirect URI для текущего входа **не нужен**: веб использует Google Identity Services (окно GIS, не свой `oauth_callback.html`). Implicit-поток `response_type=token` Google больше не принимает.
+
+Web client ID достаточно в `dart_defines.json`.
 
 ## Релиз Android
 

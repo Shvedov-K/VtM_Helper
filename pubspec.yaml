@@ -39,8 +39,11 @@ dependencies:
   google_fonts: ^6.1.0
   flutter_launcher_icons: ^0.13.1
   google_sign_in: ^6.2.2
+  google_sign_in_web: ^0.12.4
+  google_identity_services_web: ^0.3.3
   googleapis: ^13.2.0
   http: ^1.2.2
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:

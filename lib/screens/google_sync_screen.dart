@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
@@ -6,6 +7,7 @@ import 'package:vtm_helper/models/chronicle.dart';
 import 'package:vtm_helper/services/drive_sync_service.dart';
 import 'package:vtm_helper/services/google_config.dart';
 import 'package:vtm_helper/services/storage_service.dart';
+
 
 class GoogleSyncScreen extends StatefulWidget {
   final Chronicle? focus;
@@ -22,20 +24,30 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
   bool _busy = false;
   String? _status;
   List<Chronicle> _chronicles = [];
+  StreamSubscription? _userSub;
 
   @override
   void initState() {
     super.initState();
     _reload();
+    _userSub = _drive.onUserChanged.listen((_) {
+      if (mounted) setState(() {});
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loginAndRestore();
     });
   }
 
+  @override
+  void dispose() {
+    _userSub?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loginAndRestore() async {
     if (!mounted) return;
     try {
-      final acc = await _drive.signIn();
+      final acc = await _drive.trySilentSignIn();
       if (!mounted) return;
       setState(() {});
       if (acc == null) return;
@@ -53,7 +65,6 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
     await _reload();
     if (!mounted) return;
     if (result == null) {
-      _status = 'Синхронизация уже выполнена в этой сессии.';
       return;
     }
     if (result.needsConsent) {
@@ -92,7 +103,10 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
     try {
       await job();
     } catch (e) {
-      _status = '$e';
+      var s = e.toString();
+      if (s.startsWith('Bad state: ')) s = s.substring('Bad state: '.length);
+      if (s.startsWith('Exception: ')) s = s.substring('Exception: '.length);
+      _status = s;
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -149,15 +163,11 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
               onPressed: _busy
                   ? null
                   : () => _run(() async {
-                        final acc = await _drive.signIn();
-                        if (acc == null) throw StateError('Вход отменён');
-                        final ok = await _drive.ensureDriveAccess(
-                          interactive: true,
-                        );
+                        _status = 'Открывается окно Google…';
+                        if (mounted) setState(() {});
+                        final ok = await _drive.signIn();
                         if (!ok) {
-                          throw StateError(
-                            'Google не выдал доступ к Drive. Разреши Диск в окне Google.',
-                          );
+                          throw DriveException('Вход отменён');
                         }
                         await _applyRestore(force: true);
                       }),
@@ -173,8 +183,10 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                           interactive: true,
                         );
                         if (!ok) {
-                          throw StateError(
-                            'Google не выдал доступ к Drive. Разреши Диск в окне Google.',
+                          throw DriveException(
+                            'Не удалось получить доступ к Диску. '
+                            'Должно открыться окно Google — разреши Drive. '
+                            'Если окна не было, разреши всплывающие для этого сайта и нажми ещё раз.',
                           );
                         }
                         await _applyRestore(force: true);
@@ -328,7 +340,8 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
 
   Future<void> _joinByLink() async {
     if (!_drive.isSignedIn) {
-      await _drive.signIn();
+      final ok = await _drive.signIn();
+      if (!ok || !mounted) return;
     }
     if (!mounted) return;
     final linkCtrl = TextEditingController();

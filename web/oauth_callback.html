@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Google sign-in</title>
+</head>
+<body>
+  <p>Signing in…</p>
+  <script>
+    (function () {
+      var params = {};
+      function parse(raw) {
+        raw.split('&').forEach(function (part) {
+        if (!part) return;
+        var i = part.indexOf('=');
+        var k = decodeURIComponent(i >= 0 ? part.slice(0, i) : part);
+        var v = decodeURIComponent(i >= 0 ? part.slice(i + 1) : '');
+        params[k] = v;
+        });
+      }
+      parse((window.location.hash || '').replace(/^#/, ''));
+      parse((window.location.search || '').replace(/^\?/, ''));
+      var payload = {
+        type: 'vtm_google_oauth',
+        access_token: params.access_token || '',
+        expires_in: params.expires_in || '',
+        error: params.error || '',
+      };
+      if (window.opener) {
+        window.opener.postMessage(JSON.stringify(payload), window.location.origin);
+      }
+      window.close();
+    })();
+  </script>
+</body>
+</html>

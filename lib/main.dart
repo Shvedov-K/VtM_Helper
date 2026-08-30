@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:vtm_helper/screens/character_list_screen.dart';
+import 'package:vtm_helper/services/drive_sync_service.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  DriveSyncService.instance.warmUp();
   runApp(const MyApp());
 }
 

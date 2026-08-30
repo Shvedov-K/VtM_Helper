@@ -23,11 +23,29 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
   List<Chronicle> _chronicles = [];
   String? _filterChronicleId; // null = все
   bool _isLoading = true;
+  bool _googleSignedIn = false;
+  bool _driveReady = false;
 
   @override
   void initState() {
     super.initState();
     _reload();
+    DriveSyncService.instance.warmUp().then((_) async {
+      if (!mounted) return;
+      await _reload();
+      await _refreshGoogleState();
+    });
+  }
+
+  Future<void> _refreshGoogleState() async {
+    final signed = DriveSyncService.instance.isSignedIn;
+    final drive =
+        signed ? await DriveSyncService.instance.hasDriveToken() : false;
+    if (!mounted) return;
+    setState(() {
+      _googleSignedIn = signed;
+      _driveReady = drive;
+    });
   }
 
   Future<void> _reload() async {
@@ -412,6 +430,7 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
                 MaterialPageRoute(builder: (_) => const GoogleSyncScreen()),
               );
               await _reload();
+              await _refreshGoogleState();
             },
           ),
           IconButton(
@@ -429,6 +448,27 @@ class _CharacterListScreenState extends State<CharacterListScreen> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
+                if (_googleSignedIn && !_driveReady)
+                  Material(
+                    color: Colors.orange.shade800,
+                    child: ListTile(
+                      leading: const Icon(Icons.cloud_off),
+                      title: const Text('Google вошёл, Диск ещё не подключен'),
+                      subtitle: const Text(
+                        'Открой облако и нажми «Синхронизировать Диск»',
+                      ),
+                      onTap: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const GoogleSyncScreen(),
+                          ),
+                        );
+                        await _reload();
+                        await _refreshGoogleState();
+                      },
+                    ),
+                  ),
                 if (_chronicles.isNotEmpty)
                   SizedBox(
                     height: 48,
